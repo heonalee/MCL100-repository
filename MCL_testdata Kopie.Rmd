@@ -20,6 +20,14 @@ editor_options:
     error: TRUE
     warning: TRUE
     message: TRUE
+  format: 
+  gfm : 
+    code-fold: false
+editor: visual
+knitr:
+  opts_chunk:
+    message: false
+    warning: false
 ---
 Für md output: 
   gfm : 
