@@ -1,0 +1,872 @@
+---
+title: "MCL_Testdatensatz"
+author: "Heona"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    css: styles.css
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    theme: darkly
+    highlight: tango
+    number_sections: false
+    df_print: paged
+editor_options: 
+  markdown: 
+    wrap: sentence
+  options:
+    error: TRUE
+    warning: TRUE
+    message: TRUE
+---
+Für md output: 
+  gfm : 
+    code-fold: false
+editor: visual
+date: "`r Sys.Date()`"
+knitr:
+  opts_chunk:
+    message: false
+    warning: false
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(janitor)
+library(dplyr)
+library(tidyr)
+library(forcats)
+library(ggplot2)
+library(cowplot)
+library(randomcoloR)
+library(ComplexHeatmap)
+library(circlize)
+library(tibble)
+library(psych)
+library(pcaMethods)
+library(scrime)
+```
+
+# MCL testdata
+
+## Import the data
+
+First I need to import the RDS file to R-Studio.
+
+I assign it to mcl_testdata and standardize the format of column names by clean_names() from the janitor package.
+
+--\> removes all weird white spaces/spaces/special characters/etc.
+and replaces with underscores(\_)
+
+```{r data import}
+getwd()
+setwd("/Users/hlee/Desktop/Doktorarbeit")
+mcl_testdata_original <- readRDS("20230727_MCL_testdata.rds") %>%
+  janitor::clean_names()
+```
+
+```{r dimensions of original raw data}
+dim(mcl_testdata_original)
+```
+
+The original dataset consists of 7211 rows and 262 columns.
+
+I only need uniprot_i\_ds, gene_names corrected reporter intensity information.
+
+--\> I only select the relevant columns
+
+--\> I rename them to uniprot_id and gene_names and remove "reporter_intensity_corrected" from the column names (except for in uniprot_id and gene_names)
+
+```{r selecting and renaming data}
+mcl_testdata <- mcl_testdata_original %>%
+  dplyr::select(uniprot_i_ds, gene_names, contains("reporter_intensity_corrected")) %>%
+  dplyr::rename("uniprot_id" = "uniprot_i_ds" ) %>%
+  dplyr::rename("gene_id" = "gene_names") %>%
+  dplyr::rename_with(.cols = -c("uniprot_id", "gene_id"), .fn = ~ stringr::str_remove(string = ., "reporter_intensity_corrected_"))
+
+dim(mcl_testdata)
+```
+
+The transformed dataset mcl_data contains 7211 rows and 222 columns.
+
+## Quick data checkup
+
+### Missing values
+
+Check for number of missing values R likes to work with NA as missing values, but in out dataset missing values are NaN.
+
+```{r missing values}
+#convert NaN to NA
+#this code replaces "NaN" with NA of type integer:
+mcl_testdata[mcl_testdata == "NaN"] <- NA_integer_
+
+#convert Zero values to NA
+#this code replaces 0 with NA of type integer except for column 1 and 2
+mcl_testdata[,-c(1:2)][mcl_testdata[,-c(1:2)] == "0"] <- NA_integer_
+
+#remove rows with only NA
+mcl_testdata <- mcl_testdata %>%
+  filter(rowSums(is.na(mcl_testdata[,-c(1:2)])) != ncol(mcl_testdata[,-c(1:2)]))
+
+print(paste("Total number of missing values: ", sum(is.na(mcl_testdata))))
+
+dim(mcl_testdata)
+```
+
+The dataset now contains 7007 rows and 222 columns.
+
+### Duplicates
+
+check for duplicated features and samples:
+
+```{r duplicates}
+print(paste("Number of duplicated features: ", sum(duplicated(mcl_testdata$uniprot_id))))
+print(paste("Number of duplicated samples: ", sum(duplicated(colnames(mcl_testdata[,-c(1:2)])))))
+```
+
+### Combine replicates & reshape dataframe from wide to long
+
+with pivot_longer() function
+
+--\> the columns are transformed into 2 new columns: "Prot_id1" (previously the column names that contained "r1" = replicate 1) and "count_R1" (corresponding to the values in those columns)
+
+--\> the same thing with Prot_id2 and count_R2 (for replicate 2)
+
+--\> then: a new column containing the mean of count_R1 and count_R2 is added, ignoring the NAs in the mean calculation
+
+```{r attempt 1 to combine replicates, eval = FALSE}
+#combine both replicates 
+mcl_testdata_long <- cbind(
+  mcl_testdata %>%
+    dplyr::select(uniprot_id, contains("r1")) %>%
+    tidyr::pivot_longer(!uniprot_id,
+                        names_to = "Prot_id1",
+                        values_to = "count_R1"),
+  mcl_testdata %>%
+    dplyr::select(uniprot_id, contains("r2")) %>%
+    tidyr::pivot_longer(!uniprot_id,
+                        names_to = "Prot_id2",
+                        values_to = "count_R2") %>%
+    dplyr::select(-uniprot_id)
+    
+) %>%
+  rowwise() %>%
+  dplyr::mutate(avg_count = mean(c_across(cols = c(count_R1, count_R2)), na.rm = TRUE))
+```
+
+somehow, R cannot run this code (takes forever)... the traceback says "no loop for break/next, jumping to top level", even though I do not have any break or next statements... I'm confused
+
+I tried to divide the code into smaller code snippets, creating a data frame that is with r1 data and another with r2 data, to then merge them
+
+```{r splitting code from attempt 1 to combine replicates}
+mcl_testdata_r1 <- mcl_testdata %>%
+  dplyr::select(uniprot_id, contains("r1")) %>%
+    tidyr::pivot_longer(!uniprot_id,
+                        names_to = "Prot_id1",
+                        values_to = "count_R1")
+
+mcl_testdata_r2 <- mcl_testdata %>%
+    dplyr::select(uniprot_id, contains("r2")) %>%
+    tidyr::pivot_longer(!uniprot_id,
+                        names_to = "Prot_id2",
+                        values_to = "count_R2")
+
+head(mcl_testdata_r1, n = 12)
+head(mcl_testdata_r2, n = 12)
+```
+
+I want to merge & create a new column for the mean of the 2 replicates, ignoring NAs.
+
+```{r attempt 2}
+mcl_testdata_long <- cbind(mcl_testdata_r1, mcl_testdata_r2[, -1]) # [, -1] was to leave out the second uniprot_id column
+
+mcl_testdata_avg <- mcl_testdata_long %>%
+  rowwise() %>%
+  mutate(avg_count = mean(c(count_R1, count_R2), na.rm = TRUE)) 
+
+#reformat the NaN in the new column to NA
+mcl_testdata_avg[mcl_testdata_avg == "NaN"] <- NA_integer_
+```
+
+### Visualize NAs
+
+```{r visualize NAs}
+comb1 <- mcl_testdata_avg %>%
+  group_by(Prot_id1) %>%
+  summarise(na_rate = sum(is.na(avg_count))) %>%
+  mutate(Prot_id2 = Prot_id1) %>% # duplicates Prot_id1 into a new column Prot_id2
+  separate(Prot_id2, c("remove", "Plex"), sep = "r1_") %>% # separates values in Prot_id2 into 2 parts, the part before "r1_" is assigned to new col "remove", the part afte "r1_" is assigned to "Plex"
+  mutate(na_perc = na_rate / nrow(mcl_testdata)) # percentage of NA for each group
+
+ggplot(comb1, aes(
+    x = forcats::fct_reorder(Prot_id1, na_perc),
+    y = na_perc,
+    fill = Plex
+  )) +
+  geom_col() +
+  theme_cowplot() +
+  labs(x = "Prot_id", y = "[%] of proteins missing") +
+  theme(
+    panel.border = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line.y =  element_line(colour = "black"),
+    axis.line.x =  element_line(colour = "black"),
+    axis.text.y = element_text(colour = "black"),
+    legend.title = element_blank(),
+    axis.text.x = element_text(
+      size = 6,
+      angle = 90,
+      hjust = 1,
+      vjust = 1
+    ),
+    legend.position = "none"
+  ) 
+```
+
+do the same with a different color palette?
+
+```{r visualize NA with different color palette}
+plex_vec <- unique(
+  stringr::str_remove(
+    colnames(mcl_testdata[,-c(1,2)]), 
+    "_._r1_|_._r2_|_.._r1_|_.._r2_")
+  ) 
+
+palette <- distinctColorPalette(length(plex_vec))
+
+comb <- mcl_testdata_avg %>% 
+  dplyr::filter(Prot_id1 %in% colnames(mcl_testdata[,-1])) %>%
+  group_by(Prot_id1) %>%
+  summarise(na_rate = sum(is.na(avg_count))) %>%
+  mutate(Prot_id2 = Prot_id1) %>%
+  separate(Prot_id2, c("remove", "Plex"), sep = "r1_") %>%
+  mutate(na_perc = na_rate / nrow(mcl_testdata)) 
+
+ggplot(comb, aes(
+    x = forcats::fct_reorder(Prot_id1, na_perc),
+    y = na_perc,
+    fill = Plex
+  )) +
+  geom_col() +
+  theme_cowplot() +
+  labs(x = "Prot_id", y = "[%] of proteins missing") +
+  theme(
+    panel.border = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line.y =  element_line(colour = "black"),
+    axis.line.x =  element_line(colour = "black"),
+    axis.text.y = element_text(colour = "black"),
+    legend.title = element_blank(),
+    axis.text.x = element_text(
+      size = 5,
+      angle = 90,
+      hjust = 1,
+      vjust = 1
+    ),
+    legend.position = "none"
+  )  +
+  scale_fill_manual(values = palette)
+```
+
+### Print metrics for missing values
+
+```{r print metrics for NA}
+print(paste("Total number of proteins identified:", nrow(mcl_testdata), sep = " "))
+print(paste("Median number of proteins identified per sample:", nrow(mcl_testdata) - median(comb$na_rate), sep = " "))
+print(paste("Minimum number of proteins identified per sample:", nrow(mcl_testdata) - max(comb$na_rate), sep = " "))
+print(paste("Maximum number of proteins identified per sample:", nrow(mcl_testdata) - min(comb$na_rate), sep = " "))
+```
+
+## Replicate correlation
+
+each plex was measured in two replicates - that should be similar - so we investigate the correlation between both replicates
+
+```{r Heatmap}
+library(ComplexHeatmap)
+library(circlize)
+
+R1 <- mcl_testdata %>%
+  dplyr::select(contains("r1"))
+R2 <- mcl_testdata %>%
+  dplyr::select(contains("r2"))
+
+#set the color-vector 
+color_fun_corr = colorRamp2(c(-1, 0, 1), c("blue", "white", "red"))
+
+cor(R1, R2, method = "spearman", use = "pairwise.complete.obs") %>%
+  Heatmap(as.matrix(.),
+                   column_title = "Replicate 1",
+                   row_title = "Replicate 2",
+                   col = color_fun_corr,
+                   show_row_names = FALSE,
+                   show_column_names = FALSE,
+                   cluster_rows = FALSE,
+                   cluster_columns = FALSE,
+                   name = "Spearman's R") %>%
+  draw()
+```
+
+
+### Reference channel correlation
+
+reference channel is the 11th sample, so I only select the 11th sample of each plex as ref_cor
+
+Then, cor() calculates the pairwise Spearman correlations for the selected columns starting with 11, considering only complete observations (pairwise.complete.obs).
+The resulting correlation matrix is converted to a data frame using as.data.frame().
+The mutate() function adds new column "type" with the value "ref" to distinguish it as the reference-channel correlation.
+pivot_longer() converts the correlation matrix from wide format to long format, resulting in a tibble with two columns: "Prot_id" and "count" (the correlation values) filter(count != 1) removes self-correlation values (correlation of a variable with itself), as these values are always 1 in correlation matrices.
+
+```{r ref channel correlation}
+mcl_testdata_wide <- mcl_testdata_avg %>%
+  dplyr::select(c("uniprot_id", "Prot_id1", "avg_count")) %>%
+  pivot_wider(names_from = "Prot_id1", values_from = avg_count)
+#first, compute the reference-channel correlation 
+ref_cor11 <- mcl_testdata_wide %>%
+  dplyr::select(starts_with("11_")) %>% 
+  cor(., method = "spearman", use = "pairwise.complete.obs") %>%
+  as.data.frame() %>%
+  mutate(type = "ref") %>%
+  pivot_longer(!c(type), names_to = "Prot_id", values_to = "count") %>%
+  filter(count != 1)
+
+head(ref_cor11, n = 5)
+
+ref_cor <- ref_cor11[duplicated(ref_cor11$count),]
+
+head(ref_cor, n = 5)
+
+ggplot(ref_cor, aes(count)) +
+  geom_density(fill = "#2a9d8f") +
+  cowplot::theme_cowplot() +
+  labs(x = "Spearman's R" ) 
+```
+
+What I don't understand....
+if the ref_cor11 has 10 columns after selecting the cols starting with 11 from mcl_testdata_wide - which does cor() choose to compare for correlation?
+I don't really understand which count shows correlation between which samples in ref_cor and ref_cor11
+
+Anyways, there seems to be a fair but widespread correlation for the reference channels.
+
+## Raw data distribution
+
+inspect how the data is distributed without any correction
+
+```{r raw data distribution}
+order_vec <- colnames(mcl_testdata[,-c(1:2)])
+
+plot_grid(
+  mcl_testdata %>%
+    dplyr::select(-gene_id) %>%
+    pivot_longer(!uniprot_id, names_to = "Prot_id", values_to = "intensity") %>%
+    mutate(splitter = Prot_id) %>%
+    separate(splitter, c("remove", "plex"), sep = "_r1_|_r2_") %>%
+    filter(grepl("_r1_", Prot_id)) %>%
+    ggplot(aes(
+      factor(Prot_id, levels = order_vec), log2(intensity), fill = plex
+    )) +
+    geom_boxplot() +
+    theme_cowplot() +
+    theme(axis.text.x = element_text(
+      size = 6,
+      angle = 90,
+      hjust = 1,
+      vjust = 1
+    )) +
+    labs(x = "", y = "log2(intensity)", title = "Replicate 1") +
+    scale_fill_manual(values = palette),
+  
+  mcl_testdata %>%
+    dplyr::select(-gene_id) %>%
+    pivot_longer(!uniprot_id, names_to = "Prot_id", values_to = "intensity") %>%
+    mutate(splitter = Prot_id) %>%
+    separate(splitter, c("remove", "plex"), sep = "_r1_|_r2_") %>%
+    filter(grepl("_r2_", Prot_id)) %>%
+    ggplot(aes(
+      factor(Prot_id, levels = order_vec), log2(intensity), fill = plex
+    )) +
+    geom_boxplot() +
+    theme_cowplot() +
+    theme(axis.text.x = element_text(
+      size = 6,
+      angle = 90,
+      hjust = 1,
+      vjust = 1
+    )) +
+    labs(x = "", y = "log2(intensity)", title = "Replicate 2") +
+    scale_fill_manual(values = palette),
+  
+  nrow = 2
+)
+```
+
+## Sample loading normalization
+
+In the first step, we normalize within each plex by creating a normalization factor from a global scaling value, here called "target" (median of all column sums) divided by each samples column sum.
+
+```{r sample loading normalization}
+library(dplyr)
+
+## create a vector of plexes
+plex_vec <- unique(
+  stringr::str_remove(
+    colnames(mcl_testdata[,-c(1,2)]), 
+    "._r1_|._r2_|.._r1_|.._r2_")
+  ) 
+
+plex_vec
+# Store each plex into a list embedment
+plex_list <- list() 
+
+for(i in plex_vec) {
+  
+  plex_list[[i]] <- mcl_testdata %>% 
+    dplyr::select(contains(i))
+  
+}
+
+
+#create the target scaling factor 
+colsum_vec <- c() 
+# ChatGPT says that colsum_vec <- numeric(length = total_number_of_columns) might be more efficient with large datasets
+
+for(i in plex_vec) {
+  
+  df <- plex_list[[i]]
+  
+  colsum_vec <- c(colsum_vec, colSums(df, na.rm = TRUE))
+  # colSums takes the sum of the whole column = sum of one plex
+  
+}
+
+colsum_vec
+
+target <- median(colsum_vec, na.rm = TRUE)
+
+#correct per plex with a helper function
+run_sl_correct <- function(Y) { 
+  norm_facs <- target / colSums(Y, na.rm = TRUE) # claculate normalization factor for each column in matrix Y
+  output_sl <- sweep(Y, 2, norm_facs, FUN = "*") # multiplies norm_facs with each column
+  
+  return(output_sl) # output_sl is the normalized matrix
+}
+
+data_sl_repl <- plex_list%>%
+  purrr::map(run_sl_correct) %>% 
+  bind_cols()
+
+#Visualize the output 
+plot_grid(
+  data_sl_repl %>%
+    tibble::rownames_to_column("n") %>% # R cannot find this function
+    pivot_longer(!n, names_to = "Prot_id", values_to = "intensity") %>%
+    mutate(splitter = Prot_id) %>%
+    separate(splitter, c("remove", "plex"), sep = "_r1_|_r2_") %>%
+    filter(grepl("_r1_", Prot_id)) %>%
+    ggplot(aes(
+      factor(Prot_id, levels = order_vec), log2(intensity), fill = plex
+    )) +
+    geom_boxplot() +
+    theme_cowplot() +
+    theme(axis.text.x = element_text(
+      size = 6,
+      angle = 90,
+      hjust = 1,
+      vjust = 1
+    )) +
+    labs(x = "", y = "log2(intensity)", title = "Replicate 1") +
+    scale_fill_manual(values = palette),
+  
+  data_sl_repl %>%
+    rownames_to_column("n") %>% # R cannot find this function
+    pivot_longer(!n, names_to = "Prot_id", values_to = "intensity") %>%
+    mutate(splitter = Prot_id) %>%
+    separate(splitter, c("remove", "plex"), sep = "_r1_|_r2_") %>%
+    filter(grepl("_r2_", Prot_id)) %>%
+    ggplot(aes(
+      factor(Prot_id, levels = order_vec), log2(intensity), fill = plex
+    )) +
+    geom_boxplot() +
+    theme_cowplot() +
+    theme(axis.text.x = element_text(
+      size = 6,
+      angle = 90,
+      hjust = 1,
+      vjust = 1
+    )) +
+    labs(x = "", y = "log2(intensity)", title = "Replicate 2") +
+    scale_fill_manual(values = palette),
+  
+  nrow = 2
+)
+```
+
+### Check for correlation between random sets of channels
+
+```{r corr between random sets}
+library(psych)
+
+sl_test_data <- data_sl_repl %>%
+  dplyr::select(contains("r1")) %>%
+  dplyr::select(contains(plex_vec[1:6])) %>%
+  dplyr::select(contains("10_"))
+
+pairs.panels(log2(sl_test_data), lm = TRUE, main = "Random channel over plexes SL")
+```
+
+There is a fair amount of correlation, but still with room for improvement.
+Let's further have a look into the general structure in the dataset by PCA.
+Since we are working with a dataset that contains missing data, we probabilistic PCA (pPCA) that accounts for missing data <http://www.cs.columbia.edu/~blei/seminar/2020-representation/readings/TippingBishop1999.pdf>.
+
+## Principal Component analysis
+
+--\> highly correlated samples cluster together in a 2D grap The axes are ranked in order of importance - differences along x axis (PC1 = principle component 1) are more important than diff.
+along the 2nd principal componenet on y-axis (PC2)
+
+```{r pca}
+library(pcaMethods)
+library(scrime)
+
+threshold <- 0.5
+
+ppca_df <- data_sl_repl %>% 
+  filter(rowMeans(is.na(.)) < threshold) %>%
+  #feature-wise scaling and centering 
+  rowScales() %>%
+  as.data.frame()
+
+data_ppca <- pcaMethods::pca(t(as.matrix(ppca_df)), method = "ppca", nPcs = 2, seed = 123)
+
+ppca_out <- as.data.frame(scores(data_ppca)) %>%
+  rownames_to_column("Prot_id") %>%
+  separate(Prot_id, c("Number", "Plex"), sep = "_r1_|_r2_")
+ggplot(ppca_out, aes(PC1, PC2, col = Plex)) +
+  geom_point(size = 3) +
+  scale_colour_manual(values = palette) +
+  theme_classic() +
+  xlab(paste("PC1 (", round(data_ppca@R2[1] * 100, digits = 2), "%)")) +
+  ylab(paste("PC2 (", round(data_ppca@R2[2] * 100, digits = 2), "%)"))
+```
+
+The plexes cluster a lot, there are a few outliers (ex. in plex 1880).
+Plex 1876 forms 2 clusters - perhaps the replicates are a little different for this plex?
+
+## Internal reference scaling
+
+```{r internal reference scaling}
+#make a dataframe of the reference channels per plex 
+irs_factors <- data_sl_repl %>% 
+  dplyr::select(contains("11_"))
+irs_factors
+
+#calculate the geometric mean per sample 
+irs_factors$geomean <- apply(irs_factors, 1, function(x) exp(mean(log(x), na.rm = TRUE)))
+
+#pull out sample names to identify  !!! Adjust removal position to geomeam column
+irs_factor_vec = as.vector(names(irs_factors[,-c((length(plex_vec)*2)+1)]))
+irs_factor_vec
+
+#create the protein and reference channel wise scaling factor
+for(i in irs_factor_vec) {
+  factor <-  irs_factors$geomean / (irs_factors %>% dplyr::select(i))
+  irs_factors[,paste0("fac_",i)] <- factor
+}
+
+irs_mult <- colnames(irs_factors %>% dplyr::select(contains("fac"))) %>% as.data.frame
+
+irs_mult <- cbind(irs_mult, irs_mult) 
+
+colnames(irs_mult) <- c("factor", "exp")
+irs_mult
+######
+irs_mult<- irs_mult %>%
+  separate(exp, c("discard", "plex"), sep = "\\_11_") %>%
+  dplyr::select(-discard) %>% 
+  filter(plex !=  "r1_1874") # why this step?? i just took the first plex
+
+irs_mult_vec = as.vector(irs_mult$plex)
+
+irs_fac_filt <- irs_factors %>% dplyr::select(contains("fac"))
+
+all_irs <- (data_sl_repl %>% dplyr::select(contains( "r1_1874"))) * unlist(irs_fac_filt %>% dplyr::select(contains( "r1_1874")))
+
+for(i in irs_mult_vec) {
+  all_irs <- cbind(all_irs, (data_sl_repl %>% dplyr::select(contains(i))) * unlist(irs_fac_filt %>% dplyr::select(contains(i))))
+}
+
+all_irs
+
+#Visualize the output 
+plot_grid(
+  all_irs %>%
+    rownames_to_column("n") %>%
+    pivot_longer(!n, names_to = "Prot_id", values_to = "intensity") %>%
+    mutate(splitter = Prot_id) %>%
+    separate(splitter, c("remove", "plex"), sep = "_r1_|_r2_") %>%
+    filter(grepl("_r1_", Prot_id)) %>%
+    ggplot(aes(
+      factor(Prot_id, levels = order_vec), log2(intensity), fill = plex
+    )) +
+    geom_boxplot() +
+    theme_cowplot() +
+    theme(axis.text.x = element_text(
+      size = 6,
+      angle = 90,
+      hjust = 1,
+      vjust = 1
+    )) +
+    labs(x = "", y = "log2(intensity)", title = "Replicate 1") +
+    scale_fill_manual(values = palette),
+  
+  all_irs %>%
+    rownames_to_column("n") %>%
+    pivot_longer(!n, names_to = "Prot_id", values_to = "intensity") %>%
+    mutate(splitter = Prot_id) %>%
+    separate(splitter, c("remove", "plex"), sep = "_r1_|_r2_") %>%
+    filter(grepl("_r2_", Prot_id)) %>%
+    ggplot(aes(
+      factor(Prot_id, levels = order_vec), log2(intensity), fill = plex
+    )) +
+    geom_boxplot() +
+    theme_cowplot() +
+    theme(axis.text.x = element_text(
+      size = 6,
+      angle = 90,
+      hjust = 1,
+      vjust = 1
+    )) +
+    labs(x = "", y = "log2(intensity)", title = "Replicate 2") +
+    scale_fill_manual(values = palette),
+  
+  nrow = 2
+)
+
+```
+
+looks pretty good
+
+### Check for the correlation between the random set of channels
+
+```{r correlation between random set of channels 2}
+sl_test_data <- all_irs %>%
+  dplyr::select(contains("r1")) %>%
+  dplyr::select(contains(plex_vec[1:6])) %>%
+  dplyr::select(contains("10_"))
+
+pairs.panels(log2(sl_test_data), lm = TRUE, main = "Random channel over plexes SL")
+
+```
+
+The correlation looks well improved!!
+
+```{r check ppca}
+ppca_df <- all_irs %>% 
+  filter(rowMeans(is.na(.)) < threshold) %>%
+  #feature-wise scaling and centering 
+  rowScales() %>%
+  as.data.frame()
+data_ppca <- pcaMethods::pca(t(as.matrix(ppca_df)), method = "ppca", nPcs = 2, seed = 123)
+ppca_out <- as.data.frame(scores(data_ppca)) %>%
+  rownames_to_column("Prot_id") %>%
+  separate(Prot_id, c("Number", "Plex"), sep = "_r1_|_r2_")
+ggplot(ppca_out, aes(PC1, PC2, col = Plex)) +
+  geom_point(size = 3) +
+  scale_colour_manual(values = palette) +
+  theme_classic() +
+  xlab(paste("PC1 (", round(data_ppca@R2[1] * 100, digits = 2), "%)")) +
+  ylab(paste("PC2 (", round(data_ppca@R2[2] * 100, digits = 2), "%)"))
+
+```
+
+The individual samples are spead and the plexes do not cluster anymore! 
+The replicates still fall together - just as they should.
+
+## Merge replicates by average
+```{r merge replicates, eval = FALSE}
+mcl_testdata_norm <- cbind(mcl_testdata[,c(1)], all_irs) %>%
+  dplyr::select(-contains("11_"))
+
+colnames(mcl_testdata_norm)[1] <- "uniprot_id"
+
+mcl_testdata_long_norm <- cbind(
+  mcl_testdata_norm %>%
+    dplyr::select(uniprot_id, contains("r1")) %>%
+    tidyr::pivot_longer(!uniprot_id,
+                        names_to = "Prot_id1",
+                        values_to = "count_R1"),
+  mcl_testdata_norm %>%
+    dplyr::select(uniprot_id, contains("r2")) %>%
+    tidyr::pivot_longer(!uniprot_id,
+                        names_to = "Prot_id2",
+                        values_to = "count_R2") %>%
+    dplyr::select(-uniprot_id)
+  
+) %>%
+  rowwise() %>%
+  dplyr::mutate(avg_count = mean(c_across(cols = c(count_R1, count_R2)), na.rm = TRUE))
+```
+
+Just like before, this code to merge the r1 and r2 data cannot be run by R... (takes forever), so again, I am dividing the code into smaller code snippets, creating a data frame that is with r1 data and another with r2 data, to then merge them:
+
+```{r merge replicates in smaller codes}
+mcl_testdata_norm <- cbind(mcl_testdata[,c(1)], all_irs) %>%
+  dplyr::select(-contains("11_"))
+
+colnames(mcl_testdata_norm)[1] <- "uniprot_id"
+
+# create the datasets for r1 and r2 first separately
+mcl_testdata_long_norm_r1 <- mcl_testdata_norm %>%
+    dplyr::select(uniprot_id, contains("r1")) %>%
+    tidyr::pivot_longer(!uniprot_id,
+                        names_to = "Prot_id1",
+                        values_to = "count_R1")
+
+mcl_testdata_long_norm_r2 <- mcl_testdata_norm %>%
+    dplyr::select(uniprot_id, contains("r2")) %>%
+    tidyr::pivot_longer(!uniprot_id,
+                        names_to = "Prot_id2",
+                        values_to = "count_R2") 
+
+head(mcl_testdata_long_norm_r1, n = 3)
+head(mcl_testdata_long_norm_r2, n = 3)
+
+# now merge:
+# leave out uniprot_id (first col) from r2 dataset
+
+mcl_testdata_long_norm <- cbind(mcl_testdata_long_norm_r1, mcl_testdata_long_norm_r2[, -1]) 
+
+mcl_testdata_long_norm <- mcl_testdata_long_norm %>%
+  rowwise() %>%
+  mutate(avg_count = mean(c(count_R1, count_R2), na.rm = TRUE))
+```
+#### Question:
+What is the difference between: 
+mean(c_across(cols = c(count_R1, count_R2))
+and
+mean(c(count_R1, count_R2) ?
+
+In this case - it seems like both would yield the same result.
+The first code halted the code execution so I had to change it to the latter version.
+
+```{r reformat NA}
+#reformat the NA 
+mcl_testdata_long_norm$avg_count[mcl_testdata_long_norm$avg_count == "NaN"] <- NA_integer_
+
+mcl_testdata_wide_norm <- mcl_testdata_long_norm %>% 
+  dplyr::select(uniprot_id, Prot_id1, avg_count) %>%
+  pivot_wider(names_from = "Prot_id1", values_from = "avg_count")
+
+```
+
+Assign the names to the samples 
+
+```{r assign names to samples}
+m_comb <- as.matrix(mcl_testdata_wide_norm[,-1])
+
+rownames(m_comb) <- mcl_testdata_wide_norm$uniprot_id
+
+# t() function is used to transpose matrices and data frames meaning: it swaps rows and cols
+
+t_comb <- t(m_comb) %>% 
+  as.data.frame() %>%
+  rownames_to_column("Pre_id") %>%
+  separate(Pre_id, c("number", "plex"), sep = "_r1_") %>%
+  mutate(plex = paste0("P", as.character(plex))) %>%
+  mutate(plex = paste0(as.character(plex), as.character(number))) %>%
+  dplyr::select(-number) %>% 
+  column_to_rownames("plex")
+
+mcl_testdata_proteome <-
+  t(t_comb) %>% 
+  as.data.frame() %>% 
+  rownames_to_column("uniprot_id")
+
+uniprot_gene_mcl_testdata <- mcl_testdata %>% dplyr::select(uniprot_id, gene_id) 
+
+mcl_testdata_proteome_final <-  left_join(uniprot_gene_mcl_testdata, mcl_testdata_proteome, by  = "uniprot_id") 
+
+mcl_testdata_proteome_final[,3:ncol(mcl_testdata_proteome_final)]<- sapply(mcl_testdata_proteome_final[,3:ncol(mcl_testdata_proteome_final)], as.numeric)
+
+mcl_testdata_proteome_final[,3:ncol(mcl_testdata_proteome_final)] <- log2(mcl_testdata_proteome_final[,3:ncol(mcl_testdata_proteome_final)])
+
+head(mcl_testdata_proteome_final, n = 5)
+```
+
+## Final data investigation
+first, visualize the distribution per sample
+```{r final data visualization}
+mcl_testdata_wide_norm[,-c(1)] %>%
+    rownames_to_column("n") %>%
+    pivot_longer(!n, names_to = "Prot_id", values_to = "intensity") %>%
+    mutate(splitter = Prot_id) %>%
+    separate(splitter, c("remove", "plex"), sep = "_r1_|_r2_") %>%
+    filter(grepl("_r1_", Prot_id)) %>%
+    ggplot(aes(
+      factor(Prot_id, levels = order_vec), log2(intensity), fill = plex
+    )) +
+    geom_boxplot() +
+    theme_cowplot() +
+    theme(axis.text.x = element_text(
+      size = 6,
+      angle = 90,
+      hjust = 1,
+      vjust = 1
+    )) +
+    labs(x = "", y = "log2(intensity)") +
+    scale_fill_manual(values = palette)
+```
+
+```{r final data ppca}
+ppca_df <- mcl_testdata_proteome_final[,-c(1,2)] %>% 
+  filter(rowMeans(is.na(.)) < threshold) %>%
+  #feature-wise scaling and centering 
+  rowScales() %>%
+  as.data.frame()
+
+data_ppca <- pcaMethods::pca(t(as.matrix(ppca_df)), method = "ppca", nPcs = 2, seed = 123)
+
+ppca_out <- as.data.frame(scores(data_ppca)) %>%
+  rownames_to_column("Prot_id") %>%
+  separate(Prot_id, into = c("Plex", "Number"), sep = 5)
+# sep = 5 means separate at the 5th string character
+
+ggplot(ppca_out, aes(PC1, PC2, col = Plex)) +
+  geom_point(size = 3) +
+  scale_colour_manual(values = palette) +
+  theme_classic() +
+  xlab(paste("PC1 (", round(data_ppca@R2[1] * 100, digits = 2), "%)")) +
+  ylab(paste("PC2 (", round(data_ppca@R2[2] * 100, digits = 2), "%)"))
+```
+
+```{r final daata NA distribution}
+comb_df <- comb %>%
+  dplyr::select(Plex, na_perc) %>%
+  group_by(Plex) %>%
+  summarise(na = mean(na_perc)) %>%
+  mutate(Plex = paste0("P", Plex, sep = ""))
+
+ppca_out <- as.data.frame(scores(data_ppca)) %>%
+  rownames_to_column("Prot_id") %>%
+  separate(Prot_id, c("Plex", "Number"), sep = 5) %>%
+  left_join(comb_df, 
+            by = "Plex")
+
+ggplot(ppca_out, aes(PC1, PC2, col = na)) +
+  geom_point(size = 3) +
+  scale_color_viridis_c()+
+  theme_classic() +
+  xlab(paste("PC1 (", round(data_ppca@R2[1] * 100, digits = 2), "%)")) +
+  ylab(paste("PC2 (", round(data_ppca@R2[2] * 100, digits = 2), "%)")) +
+  labs(color = "% missing")
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
